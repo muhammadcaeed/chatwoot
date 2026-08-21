@@ -248,6 +248,14 @@ class Rack::Attack
   end
 
   ## ----------------------------------------------- ##
+
+  ###-----------------------------------------------###
+  ###------TEMP DIAGNOSTIC - REMOVE AFTER USE-------###
+  ###-----------------------------------------------###
+  # Counts and reports every request without ever blocking one, so we can see
+  # what `req.ip` actually resolves to behind Railway's edge + the Caddy proxy.
+  # Paired with the 'track.rack_attack' subscriber at the bottom of this file.
+  track('diag/every-request', limit: 0, period: 60, &:ip)
 end
 
 # Log blocked events
@@ -274,6 +282,19 @@ ActiveSupport::Notifications.subscribe('throttle.rack_attack') do |_name, _start
     "account_id: \"#{account_id}\", " \
     "method: \"#{req.request_method}\", " \
     "user_agent: \"#{req.user_agent}\""
+  )
+end
+
+# TEMP DIAGNOSTIC - REMOVE AFTER USE. Logs the discriminator the throttles key on.
+ActiveSupport::Notifications.subscribe('track.rack_attack') do |_name, _start, _finish, _request_id, payload|
+  req = payload[:request]
+
+  Rails.logger.warn(
+    "[RA-DIAG] req.ip: \"#{req.ip}\", " \
+    "remote_ip: \"#{req.remote_ip}\", " \
+    "REMOTE_ADDR: \"#{req.get_header('REMOTE_ADDR')}\", " \
+    "XFF: \"#{req.get_header('HTTP_X_FORWARDED_FOR')}\", " \
+    "path: \"#{req.path}\""
   )
 end
 
