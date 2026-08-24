@@ -13,6 +13,7 @@ import {
 import { ON_CONVERSATION_CREATED } from 'widget/constants/widgetBusEvents';
 import { createTemporaryMessage, getNonDeletedMessages } from './helpers';
 import { emitter } from 'shared/helpers/mitt';
+import { BUS_EVENTS } from 'shared/constants/busEvents';
 export const actions = {
   createConversation: async ({ commit, dispatch }, params) => {
     commit('setConversationUIFlag', { isCreating: true });
@@ -25,7 +26,27 @@ export const actions = {
       // Emit event to notify that conversation is created and show the chat screen
       emitter.emit(ON_CONVERSATION_CREATED);
     } catch (error) {
-      // Ignore error
+      // POST /api/v1/widget/conversations is rate limited per IP (see
+      // config/initializers/rack_attack.rb). Without this branch the customer
+      // taps "Start Conversation", the spinner stops, and absolutely nothing
+      // else happens, which reads as a broken site. Confirmed live 24 Aug 2026.
+      //
+      // Only 429 is surfaced. Anything else stays silent as before: a thrown
+      // TypeError from a downstream dispatch has no `response`, and telling a
+      // customer they are rate limited when their conversation actually was
+      // created would be worse than saying nothing.
+      //
+      // No wait time is shown on purpose. rack-attack uses a fixed window, so
+      // for a 12 hour period the honest number is often "in 11 hours", which
+      // reads as a punishment. If that number ever matters more than the tone,
+      // it is on error.response.headers['retry-after'].
+      if (error.response?.status === 429) {
+        emitter.emit(BUS_EVENTS.SHOW_ALERT, {
+          message:
+            "You've started several chats recently, so new ones are paused for a while. Email support@newmanbands.com with your order number and we'll pick it up from there.",
+          duration: 15000,
+        });
+      }
     } finally {
       commit('setConversationUIFlag', { isCreating: false });
     }

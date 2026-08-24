@@ -1,6 +1,8 @@
 import { actions } from '../../conversation/actions';
 import getUuid from '../../../../helpers/uuid';
 import { API } from 'widget/helpers/axios';
+import { emitter } from 'shared/helpers/mitt';
+import { BUS_EVENTS } from 'shared/constants/busEvents';
 
 vi.mock('../../../../helpers/uuid');
 vi.mock('widget/helpers/axios');
@@ -44,6 +46,31 @@ describe('#actions', () => {
         ['setConversationUIFlag', { isCreating: false }],
       ]);
       windowSpy.mockRestore();
+    });
+
+    it('tells the customer when the API rate limits the request', async () => {
+      const onAlert = vi.fn();
+      emitter.on(BUS_EVENTS.SHOW_ALERT, onAlert);
+      API.post.mockRejectedValue({ response: { status: 429 } });
+
+      await actions.createConversation({ commit, dispatch }, {});
+
+      expect(onAlert).toHaveBeenCalledTimes(1);
+      expect(onAlert.mock.calls[0][0].message).toContain(
+        'support@newmanbands.com'
+      );
+      emitter.off(BUS_EVENTS.SHOW_ALERT, onAlert);
+    });
+
+    it('stays silent on a failure that is not a rate limit', async () => {
+      const onAlert = vi.fn();
+      emitter.on(BUS_EVENTS.SHOW_ALERT, onAlert);
+      API.post.mockRejectedValue(new Error('network down'));
+
+      await actions.createConversation({ commit, dispatch }, {});
+
+      expect(onAlert).not.toHaveBeenCalled();
+      emitter.off(BUS_EVENTS.SHOW_ALERT, onAlert);
     });
   });
 
