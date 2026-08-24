@@ -285,6 +285,123 @@ ActiveSupport::Notifications.subscribe('throttle.rack_attack') do |_name, _start
   )
 end
 
+###-----------------------------------------------###
+###------Throttled Response (widget page load)-----###
+###-----------------------------------------------###
+# rack-attack's stock 429 body is the plain string "Retry later", which renders
+# as a bare black box inside the customer's chat iframe. Confirmed live on
+# 24 Aug 2026. Give a throttled /widget page load a branded page instead.
+#
+# Scoped to the /widget page by path. Every other throttle keeps the plain-text
+# body it has always had, because the widget's XHR callers and the API expect a
+# body they can parse, not a page. `req.path` is used rather than the file's own
+# `path_without_extensions` helper on purpose: upstream renamed that method in
+# 2663a8495, and a NoMethodError here would turn EVERY throttled request into a
+# 500, including API ones.
+#
+# Note this also adds a `retry-after` header to every throttled response. The
+# stock responder omits it (throttled_response_retry_after_header defaults to
+# false), so this is a real change to API responses, and a standards-correct one.
+Rack::Attack::WIDGET_THROTTLED_HTML = <<~HTML.freeze
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>Chat is taking a short break</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+        background: #F6F5F2;
+        color: #1B1B1B;
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+      }
+      .card {
+        width: 100%;
+        max-width: 24rem;
+        background: #FFFFFF;
+        border: 1px solid #E4E1DA;
+        border-radius: 6px;
+        padding: 2rem 1.75rem 1.75rem;
+      }
+      .mark {
+        display: block;
+        font-size: 0.6875rem;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        font-weight: 700;
+        color: #8C6E33;
+        margin-bottom: 1.125rem;
+      }
+      h1 { font-size: 1.25rem; line-height: 1.25; margin-bottom: 0.75rem; }
+      p { font-size: 0.9375rem; color: #55555A; margin-bottom: 0.75rem; }
+      p.lead { color: #1B1B1B; }
+      .when { font-weight: 700; color: #1B1B1B; }
+      .help {
+        margin: 1.25rem 0 0;
+        padding-top: 1rem;
+        border-top: 1px solid #E4E1DA;
+        font-size: 0.8125rem;
+      }
+      .help a { color: #8C6E33; font-weight: 700; text-decoration: none; overflow-wrap: anywhere; }
+      .help a:hover { text-decoration: underline; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #131315; color: #ECEAE6; }
+        .card { background: #1C1C1F; border-color: #33322E; }
+        .mark { color: #C9A75C; }
+        p { color: #A9A69F; }
+        p.lead, .when { color: #ECEAE6; }
+        .help { border-top-color: #33322E; }
+        .help a { color: #C9A75C; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <span class="mark">Newman Bands</span>
+      <h1>Chat is taking a short break</h1>
+      <p class="lead">The chat has been opened a lot from this connection in the last little while, so it's paused for a moment. Nothing is wrong with your order or your account.</p>
+      <p>Please try again <span class="when">{{WAIT}}</span>.</p>
+      <p class="help">Need help sooner? Email us and include your order number.<br>
+        <a href="mailto:support@newmanbands.com">support@newmanbands.com</a>
+      </p>
+    </div>
+  </body>
+  </html>
+HTML
+
+Rack::Attack.throttled_responder = lambda do |req|
+  # match_data is always populated before the responder runs (rack-attack 6.7.0,
+  # lib/rack/attack/throttle.rb). Nil-safe anyway: this lambda is GLOBAL, so an
+  # exception here would turn every throttled request into a 500, API included.
+  #
+  # The window is FIXED, not sliding, so this is the time left in the current
+  # window rather than a full period. For the /widget throttle (1 hour) that
+  # reads as anything from seconds to 59 minutes, which is honest.
+  match_data = req.env['rack.attack.match_data'] || {}
+  period = match_data[:period].to_i
+  retry_after = period.positive? ? period - (match_data[:epoch_time].to_i % period) : 60
+  headers = { 'content-type' => 'text/plain', 'retry-after' => retry_after.to_s }
+
+  if req.path == '/widget'
+    minutes = (retry_after / 60.0).ceil
+    wait_text = minutes > 1 ? "in about #{minutes} minutes" : 'in less than a minute'
+    body = Rack::Attack::WIDGET_THROTTLED_HTML.sub('{{WAIT}}', wait_text)
+
+    [429, headers.merge('content-type' => 'text/html; charset=utf-8'), [body]]
+  else
+    [429, headers, ["Retry later\n"]]
+  end
+end
+
 # TEMP DIAGNOSTIC - REMOVE AFTER USE. Logs the discriminator the throttles key on.
 ActiveSupport::Notifications.subscribe('track.rack_attack') do |_name, _start, _finish, _request_id, payload|
   req = payload[:request]
