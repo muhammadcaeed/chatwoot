@@ -37,9 +37,9 @@ export const actions = {
       // created would be worse than saying nothing.
       //
       // No wait time is shown on purpose. rack-attack uses a fixed window, so
-      // for a 12 hour period the honest number is often "in 11 hours", which
-      // reads as a punishment. If that number ever matters more than the tone,
-      // it is on error.response.headers['retry-after'].
+      // the honest number can be most of the window, which reads as a
+      // punishment. If that number ever matters more than the tone, it is on
+      // error.response.headers['retry-after'].
       if (error.response?.status === 429) {
         emitter.emit(BUS_EVENTS.SHOW_ALERT, {
           message:
